@@ -1,36 +1,46 @@
-/* ------------ Data ------------ */
+/* ============================================================
+   SUPABASE CONFIG — fill these in from your Supabase project
+   (Project Settings → API → Project URL / anon public key)
+   ============================================================ */
+const SUPABASE_URL = 'https://voovknlmneyomfmhwsyw.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_masBIhBUlPLmy7E1RFqtZg_Up7MJWMk';
+
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+/* ------------ Data (now loaded from Supabase, not hardcoded) ------------ */
 const TYPE_LABEL = {vacation:'Vacation', sick:'Sick', personal:'Personal', unpaid:'Unpaid', absent:'Absent'};
 const TYPE_COLOR = {vacation:'#2D6A4F', sick:'#D8F0E3', personal:'#226050', unpaid:'#74C69D', absent:'#B0472F'};
 
-let employees = [
-  {id:1, name:'Amara Reyes',   role:'Product Designer',   used:2,  total:5, initials:'AR'},
-  {id:2, name:'Ben Santos',    role:'Software Engineer',  used:4,  total:5, initials:'BS'},
-  {id:3, name:'Carla Dizon',   role:'Senior Engineer',    used:1,  total:5, initials:'CD'},
-  {id:4, name:'Diego Cruz',    role:'Marketing Lead',     used:3,  total:5, initials:'DC'},
-  {id:5, name:'Elise Tan',     role:'HR Coordinator',     used:4,  total:5, initials:'ET'},
-  {id:6, name:'Faye Lim',      role:'Finance Analyst',    used:3,  total:5, initials:'FL'},
-];
+let employees = [];
+let leaves = [];
+let requests = [];
 
-// dates as YYYY-MM-DD
-let leaves = [
-  {id:1, empId:1, type:'vacation', start:'2026-07-06', end:'2026-07-10', note:'Family trip'},
-  {id:2, empId:2, type:'sick',     start:'2026-07-08', end:'2026-07-09', note:''},
-  {id:3, empId:4, type:'personal', start:'2026-07-14', end:'2026-07-14', note:'Appointment'},
-  {id:4, empId:3, type:'vacation', start:'2026-07-20', end:'2026-07-24', note:'Beach week'},
-  {id:5, empId:5, type:'unpaid',   start:'2026-07-16', end:'2026-07-17', note:''},
-  {id:6, empId:6, type:'vacation', start:'2026-06-22', end:'2026-06-26', note:''},
-  {id:7, empId:2, type:'personal', start:'2026-08-03', end:'2026-08-04', note:''},
-  {id:8, empId:4, type:'absent',   start:'2026-07-09', end:'2026-07-09', note:''},
-];
+let current = new Date(); // calendar starts on the actual current month
 
-let requests = [
-  {id:101, empId:6, type:'vacation', start:'2026-07-27', end:'2026-07-31', note:'Out of town', status:'pending'},
-  {id:102, empId:5, type:'sick',     start:'2026-07-13', end:'2026-07-13', note:'Follow-up checkup', status:'pending'},
-  {id:103, empId:1, type:'personal', start:'2026-08-10', end:'2026-08-11', note:'Moving day', status:'pending'},
-];
+/* ------------ Row <-> app shape mapping ------------
+   DB columns use emp_id/start_date/end_date; the UI code (already written)
+   expects empId/start/end, so we translate on the way in and out. */
+function rowToLeave(r){ return {id:r.id, empId:r.emp_id, type:r.type, start:r.start_date, end:r.end_date, note:r.note||''}; }
+function rowToRequest(r){ return {id:r.id, empId:r.emp_id, type:r.type, start:r.start_date, end:r.end_date, note:r.note||'', status:r.status}; }
 
-let nextId = 200;
-let current = new Date(2026, 6, 1); // July 2026
+async function loadEmployees(){
+  const {data,error} = await sb.from('employees').select('*').order('id');
+  if(error){ toast('Could not load employees'); console.error(error); return; }
+  employees = data;
+}
+async function loadLeaves(){
+  const {data,error} = await sb.from('leaves').select('*').order('id');
+  if(error){ toast('Could not load leaves'); console.error(error); return; }
+  leaves = data.map(rowToLeave);
+}
+async function loadRequests(){
+  const {data,error} = await sb.from('requests').select('*').order('id');
+  if(error){ toast('Could not load requests'); console.error(error); return; }
+  requests = data.map(rowToRequest);
+}
+async function loadAllData(){
+  await Promise.all([loadEmployees(), loadLeaves(), loadRequests()]);
+}
 
 /* ------------ Helpers ------------ */
 const fmt = d => d.toISOString().slice(0,10);
@@ -114,6 +124,7 @@ function renderCalendar(){
       let chips='';
       dayLeaves.slice(0,3).forEach(l=>{
         const e=empById(l.empId);
+        if(!e) return;
         chips+=`<span class="chip ${l.type}" title="${e.name} · ${TYPE_LABEL[l.type]}${l.note?' · '+l.note:''}">${firstName(e.name)} · ${TYPE_LABEL[l.type]}</span>`;
       });
       if(dayLeaves.length>3) chips+=`<span class="chip more">+${dayLeaves.length-3} more</span>`;
@@ -136,6 +147,7 @@ function renderRequests(){
   }
   list.innerHTML=requests.map(r=>{
     const e=empById(r.empId);
+    if(!e) return '';
     const days=daysBetween(r.start,r.end);
     const pillStyle = r.type==='sick'
       ? 'background:#D8F0E3;color:#1B4D3E'
@@ -159,15 +171,30 @@ function renderRequests(){
       ${actions}</div>`;
   }).join('');
 }
-function decide(id,status){
+async function decide(id,status){
   const r=requests.find(q=>q.id===id);
+  if(!r) return;
+
+  const {error:updErr} = await sb.from('requests').update({status}).eq('id',id);
+  if(updErr){ toast('Could not update the request'); console.error(updErr); return; }
   r.status=status;
+
   if(status==='approved'){
-    leaves.push({id:nextId++, empId:r.empId, type:r.type, start:r.start, end:r.end, note:r.note});
+    const {data,error} = await sb.from('leaves').insert({
+      emp_id:r.empId, type:r.type, start_date:r.start, end_date:r.end, note:r.note
+    }).select().single();
+    if(error){ toast('Approved, but failed to plot the leave'); console.error(error); renderAll(); return; }
+    leaves.push(rowToLeave(data));
+
     const e=empById(r.empId);
-    if(r.type!=='unpaid' && r.type!=='absent') e.used=Math.min(e.total,e.used+daysBetween(r.start,r.end));
-    toast(`Approved — plotted on the calendar`);
-  } else toast('Request declined');
+    if(e && r.type!=='unpaid' && r.type!=='absent'){
+      e.used=Math.min(e.total,e.used+daysBetween(r.start,r.end));
+      await sb.from('employees').update({used:e.used}).eq('id',e.id);
+    }
+    toast('Approved — plotted on the calendar');
+  } else {
+    toast('Request declined');
+  }
   renderAll();
 }
 
@@ -232,7 +259,7 @@ function openEmpModal(id){
   document.getElementById('eName').focus();
 }
 function closeEmpModal(){ document.getElementById('empOverlay').classList.remove('open'); editingEmpId=null; }
-function saveEmployee(){
+async function saveEmployee(){
   const name=document.getElementById('eName').value.trim();
   const role=document.getElementById('eRole').value.trim()||'Team member';
   let total=parseInt(document.getElementById('eTotal').value,10);
@@ -241,13 +268,20 @@ function saveEmployee(){
   if(isNaN(total)||total<0) total=5;
   if(isNaN(used)||used<0) used=0;
   if(used>total) used=total;
+  const initials=makeInitials(name);
+
   if(editingEmpId){
+    const {error} = await sb.from('employees')
+      .update({name, role, total, used, initials}).eq('id',editingEmpId);
+    if(error){ toast('Could not save changes'); console.error(error); return; }
     const e=empById(editingEmpId);
-    e.name=name; e.role=role; e.total=total; e.used=used; e.initials=makeInitials(name);
+    e.name=name; e.role=role; e.total=total; e.used=used; e.initials=initials;
     toast(`${firstName(name)}\u2019s details updated`);
   } else {
-    const newId=employees.length?Math.max(...employees.map(e=>e.id))+1:1;
-    employees.push({id:newId, name, role, used, total, initials:makeInitials(name)});
+    const {data,error} = await sb.from('employees')
+      .insert({name, role, total, used, initials}).select().single();
+    if(error){ toast('Could not add employee'); console.error(error); return; }
+    employees.push(data);
     toast(`${firstName(name)} added to the team`);
   }
   closeEmpModal();
@@ -262,8 +296,11 @@ function askDelete(id){
   document.getElementById('delOverlay').classList.add('open');
 }
 function closeDelModal(){ document.getElementById('delOverlay').classList.remove('open'); deletingEmpId=null; }
-function confirmDelete(){
+async function confirmDelete(){
   const e=empById(deletingEmpId);
+  if(!e) return;
+  const {error} = await sb.from('employees').delete().eq('id',deletingEmpId);
+  if(error){ toast('Could not remove employee'); console.error(error); return; }
   employees=employees.filter(x=>x.id!==deletingEmpId);
   leaves=leaves.filter(l=>l.empId!==deletingEmpId);
   requests=requests.filter(r=>r.empId!==deletingEmpId);
@@ -278,7 +315,9 @@ function askResetUsage(){
   document.getElementById('resetOverlay').classList.add('open');
 }
 function closeResetModal(){ document.getElementById('resetOverlay').classList.remove('open'); }
-function confirmResetUsage(){
+async function confirmResetUsage(){
+  const {error} = await sb.from('employees').update({used:0}).gte('id',0);
+  if(error){ toast('Could not reset usage'); console.error(error); return; }
   employees.forEach(e=>{ e.used=0; });
   closeResetModal();
   toast('Days used reset to 0 for all employees');
@@ -328,8 +367,7 @@ function runAbsenceSearch(){
 
 /* ------------ Reports ------------ */
 function renderReports(){
-  // days per month, current year
-  const year=2026;
+  const year=current.getFullYear();
   const perMonth=Array(12).fill(0);
   const perType={vacation:0,sick:0,personal:0,unpaid:0,absent:0};
   leaves.forEach(l=>{
@@ -353,7 +391,7 @@ function renderReports(){
     <div class="type-track"><i style="width:${(v/totalDays)*100}%;background:${TYPE_COLOR[t]}"></i></div>`).join('');
 }
 
-/* ------------ Modal ------------ */
+/* ------------ Modal (plot a leave) ------------ */
 function openModal(dateStr){
   if(!employees.length){ toast('Add an employee first'); return; }
   document.getElementById('mEmp').innerHTML=employees.map(e=>`<option value="${e.id}">${e.name}</option>`).join('');
@@ -364,7 +402,7 @@ function openModal(dateStr){
   document.getElementById('overlay').classList.add('open');
 }
 function closeModal(){ document.getElementById('overlay').classList.remove('open'); }
-function saveLeave(){
+async function saveLeave(){
   const empId=Number(document.getElementById('mEmp').value);
   const type=document.getElementById('mType').value;
   let start=document.getElementById('mStart').value;
@@ -372,9 +410,18 @@ function saveLeave(){
   const note=document.getElementById('mNote').value.trim();
   if(!start||!end){ toast('Pick a start and end date'); return; }
   if(end<start) [start,end]=[end,start];
-  leaves.push({id:nextId++, empId, type, start, end, note});
+
+  const {data,error} = await sb.from('leaves').insert({
+    emp_id:empId, type, start_date:start, end_date:end, note
+  }).select().single();
+  if(error){ toast('Could not plot the leave'); console.error(error); return; }
+  leaves.push(rowToLeave(data));
+
   const e=empById(empId);
-  if(type!=='unpaid' && type!=='absent') e.used=Math.min(e.total,(e.used||0)+daysBetween(start,end));
+  if(e && type!=='unpaid' && type!=='absent'){
+    e.used=Math.min(e.total,(e.used||0)+daysBetween(start,end));
+    await sb.from('employees').update({used:e.used}).eq('id',e.id);
+  }
   closeModal();
   toast(`${firstName(e.name)}'s ${TYPE_LABEL[type].toLowerCase()} leave plotted`);
   renderAll();
@@ -392,28 +439,40 @@ function toast(msg){
   toastTimer=setTimeout(()=>t.classList.remove('show'),2600);
 }
 
-/* ------------ Auth ------------ */
-let admins=[
-  {id:1, name:'Admin', email:'admin@zem.app', password:'admin123'}
-];
-let currentAdmin=null;
+/* ------------ Auth (Supabase Auth — no passwords stored in this file) ------------ */
+let currentAdmin=null; // {name, email}
 
-function attemptLogin(){
+function showApp(){
+  document.getElementById('loginScreen').style.display='none';
+  document.getElementById('app').style.display='flex';
+}
+function showLogin(){
+  document.getElementById('app').style.display='none';
+  document.getElementById('loginScreen').style.display='flex';
+  document.getElementById('loginEmail').value='';
+  document.getElementById('loginPassword').value='';
+  document.getElementById('loginError').classList.remove('show');
+}
+function adminFromUser(user){
+  return { name: (user.user_metadata && user.user_metadata.full_name) || user.email.split('@')[0], email: user.email };
+}
+
+async function attemptLogin(){
   const email=document.getElementById('loginEmail').value.trim().toLowerCase();
   const pass=document.getElementById('loginPassword').value;
   const errBox=document.getElementById('loginError');
-  const match=admins.find(a=>a.email.toLowerCase()===email&&a.password===pass);
-  if(!match){
+  const {data,error} = await sb.auth.signInWithPassword({email, password:pass});
+  if(error){
     errBox.textContent='Incorrect email or password. Try again.';
     errBox.classList.add('show');
     return;
   }
   errBox.classList.remove('show');
-  currentAdmin=match;
-  document.getElementById('loginScreen').style.display='none';
-  document.getElementById('app').style.display='flex';
+  currentAdmin=adminFromUser(data.user);
   document.getElementById('loginPassword').value='';
+  showApp();
   updateAccountDisplay();
+  await loadAllData();
   renderAll();
 }
 document.addEventListener('keydown',e=>{
@@ -440,14 +499,11 @@ document.addEventListener('click',()=>{
   document.getElementById('accountMenu').classList.remove('open');
 });
 
-function logout(e){
+async function logout(e){
   e.stopPropagation();
+  await sb.auth.signOut();
   currentAdmin=null;
-  document.getElementById('app').style.display='none';
-  document.getElementById('loginScreen').style.display='flex';
-  document.getElementById('loginEmail').value='';
-  document.getElementById('loginPassword').value='';
-  document.getElementById('loginError').classList.remove('show');
+  showLogin();
   document.getElementById('accountMenu').classList.remove('open');
   document.getElementById('acctFoot').classList.remove('open');
 }
@@ -460,14 +516,16 @@ function openSettingsModal(e){
   document.getElementById('settingsOverlay').classList.add('open');
 }
 function closeSettingsModal(){ document.getElementById('settingsOverlay').classList.remove('open'); }
-function saveSettings(){
+async function saveSettings(){
   const name=document.getElementById('sName').value.trim();
   const email=document.getElementById('sEmail').value.trim();
   if(!name||!email){ toast('Name and email can\u2019t be empty'); return; }
+  const {error} = await sb.auth.updateUser({ email, data:{ full_name:name } });
+  if(error){ toast('Could not update account'); console.error(error); return; }
   currentAdmin.name=name; currentAdmin.email=email;
   updateAccountDisplay();
   closeSettingsModal();
-  toast('Account settings updated');
+  toast(email!==currentAdmin.email ? 'Check your inbox to confirm the new email' : 'Account settings updated');
 }
 
 /* ------------ Change password ------------ */
@@ -480,20 +538,31 @@ function openPasswordModal(e){
   document.getElementById('passwordOverlay').classList.add('open');
 }
 function closePasswordModal(){ document.getElementById('passwordOverlay').classList.remove('open'); }
-function savePassword(){
+async function savePassword(){
   const cur=document.getElementById('pCurrent').value;
   const next=document.getElementById('pNew').value;
-  const confirm=document.getElementById('pConfirm').value;
+  const confirmPw=document.getElementById('pConfirm').value;
   const errBox=document.getElementById('passwordError');
-  if(cur!==currentAdmin.password){ errBox.textContent='Current password is incorrect.'; errBox.classList.add('show'); return; }
+
+  const {error:reauthErr} = await sb.auth.signInWithPassword({email:currentAdmin.email, password:cur});
+  if(reauthErr){ errBox.textContent='Current password is incorrect.'; errBox.classList.add('show'); return; }
   if(next.length<6){ errBox.textContent='New password must be at least 6 characters.'; errBox.classList.add('show'); return; }
-  if(next!==confirm){ errBox.textContent='New passwords don\u2019t match.'; errBox.classList.add('show'); return; }
-  currentAdmin.password=next;
+  if(next!==confirmPw){ errBox.textContent='New passwords don\u2019t match.'; errBox.classList.add('show'); return; }
+
+  const {error} = await sb.auth.updateUser({ password:next });
+  if(error){ errBox.textContent='Could not update password. Try again.'; errBox.classList.add('show'); return; }
   closePasswordModal();
   toast('Password updated');
 }
 
-/* ------------ Create new admin ------------ */
+/* ------------ Create new admin ------------
+   Supabase Auth is designed so ordinary (non-service-role) sign-ups switch
+   the browser's session to the new account. Since this app never exposes
+   the service-role key (doing so in a public GitHub Pages repo would let
+   anyone bypass the database's security rules), creating an admin here
+   will sign you out afterwards — sign back in with your own account, or
+   invite teammates directly from the Supabase Dashboard
+   (Authentication → Users → Add user) to avoid that switch entirely. */
 function openNewAdminModal(e){
   e.stopPropagation();
   document.getElementById('naName').value='';
@@ -503,21 +572,34 @@ function openNewAdminModal(e){
   document.getElementById('newAdminOverlay').classList.add('open');
 }
 function closeNewAdminModal(){ document.getElementById('newAdminOverlay').classList.remove('open'); }
-function saveNewAdmin(){
+async function saveNewAdmin(){
   const name=document.getElementById('naName').value.trim();
   const email=document.getElementById('naEmail').value.trim();
   const password=document.getElementById('naPassword').value;
   const errBox=document.getElementById('newAdminError');
   if(!name||!email||!password){ errBox.textContent='Fill in every field to continue.'; errBox.classList.add('show'); return; }
-  if(admins.some(a=>a.email.toLowerCase()===email.toLowerCase())){
-    errBox.textContent='An admin with this email already exists.'; errBox.classList.add('show'); return;
-  }
   if(password.length<6){ errBox.textContent='Password must be at least 6 characters.'; errBox.classList.add('show'); return; }
-  const newId=admins.length?Math.max(...admins.map(a=>a.id))+1:1;
-  admins.push({id:newId, name, email, password});
+
+  const {error} = await sb.auth.signUp({ email, password, options:{ data:{ full_name:name } } });
+  if(error){ errBox.textContent=error.message; errBox.classList.add('show'); return; }
+
   closeNewAdminModal();
-  toast(`${firstName(name)} can now sign in as admin`);
+  await sb.auth.signOut();
+  currentAdmin=null;
+  showLogin();
+  toast(`${firstName(name)} can now sign in — please sign back in to continue`);
 }
 
 /* ------------ Init ------------ */
 function renderAll(){ renderStats(); renderCalendar(); renderRequests(); renderEmployees(); renderReports(); }
+
+(async function init(){
+  const {data:{session}} = await sb.auth.getSession();
+  if(session){
+    currentAdmin=adminFromUser(session.user);
+    showApp();
+    updateAccountDisplay();
+    await loadAllData();
+    renderAll();
+  }
+})();
