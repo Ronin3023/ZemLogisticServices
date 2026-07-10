@@ -590,6 +590,11 @@ async function saveNewAdmin(){
   toast(`${firstName(name)} can now sign in — please sign back in to continue`);
 }
 
+/* ------------ PWA service worker ------------ */
+if('serviceWorker' in navigator){
+  window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(console.error));
+}
+
 /* ------------ Init ------------ */
 function renderAll(){ renderStats(); renderCalendar(); renderRequests(); renderEmployees(); renderReports(); }
 
