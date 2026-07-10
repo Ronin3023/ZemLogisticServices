@@ -1,7 +1,7 @@
 {
-  "name": "ZEM Logistic Services — Leave & Absence Planner",
-  "short_name": "Zem",
-  "description": "Leave and absence tracking for ZEM Logistic Services",
+  "name": "ZEM Logistics Services",
+  "short_name": "ZEM Logistics Services",
+  "description": "Leave and absence tracking for ZEM Logistics Services",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
